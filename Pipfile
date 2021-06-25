@@ -14,6 +14,7 @@ nltk = "*"
 gdown = "*"
 tqdm = "*"
 tensorflow = "==2.4.1"
+tk = "*"
 
 [dev-packages]
 

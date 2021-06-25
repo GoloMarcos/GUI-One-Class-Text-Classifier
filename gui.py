@@ -3,13 +3,18 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image
+from pathlib import Path
 
 def read_table():
     sg.set_options(auto_size_buttons=True)
-    layout = [[sg.Text('Dataset (a CSV file)', size=(16, 1)), sg.InputText(),
-               sg.FileBrowse(file_types=(("CSV Files", "*.csv"), ("Text Files", "*.txt")))],
-              [sg.Submit(), sg.Cancel()]]
+    layout = [[sg.Text('Datasets Directory', size=(16, 1)), sg.InputText(),
+               sg.FolderBrowse()],
+              [sg.Submit(), sg.Cancel(),
+               sg.Checkbox('CSV', size=(15,1), key='csv', default=False),
+               sg.Checkbox('PLK', size=(15,1), key='plk', default=False)]]
 
     window1 = sg.Window('Input file', layout)
     try:
@@ -19,43 +24,38 @@ def read_table():
         window1.close()
         return
 
-    filename = values[0]
+    path = values['Browse']
 
-    if filename == '':
+    if path == '':
         return
 
-    data = []
-    header_list = []
+    basepath = Path(path)
+    files_in_basepath = basepath.iterdir()
 
-    if filename is not None:
-        fn = filename.split('/')[-1]
+    if path is not None:
         try:
-            if colnames_checked:
-                df = pd.read_csv(filename, sep=',', engine='python')
-                # Uses the first row (which should be column names) as columns names
-                header_list = list(df.columns)
-                # Drops the first row in the table (otherwise the header names and the first row will be the same)
-                data = df[1:].values.tolist()
-            else:
-                df = pd.read_csv(filename, sep=',', engine='python', header=None)
-                # Creates columns names for each column ('column0', 'column1', etc)
-                header_list = ['column' + str(x) for x in range(len(df.iloc[0]))]
-                df.columns = header_list
-                # read everything else into a list of rows
-                data = df.values.tolist()
-            # NaN drop?
-            if dropnan_checked:
-                df = df.dropna()
-                data = df.values.tolist()
+            datasets = {}
+            for item in files_in_basepath:
+                if item.is_file():
+                    if values['plk']:
+                        df = pd.read_pickle(path + '/' + item.name)
+                        name_base = item.name.replace('.plk', '')
+                    elif values['csv']:
+                        df = pd.read_csv(path + '/' + item.name)
+                        name_base = item.name.replace('.cv', '')
+
+                    datasets[name_base] = df
+
             window1.close()
-            return (df, data, header_list, fn)
+            return datasets
         except:
-            sg.popup_error('Error reading file')
+            sg.popup_error(
+                'Error reading file')
             window1.close()
             return
 
 
-def show_table(data, header_list, fn):
+def show_table(data, header_list, name):
     layout = [
         [sg.Table(values=data,
                   headings=header_list,
@@ -66,109 +66,234 @@ def show_table(data, header_list, fn):
                   num_rows=min(25, len(data)))]
     ]
 
-    window = sg.Window(fn, layout, grab_anywhere=False)
+    window = sg.Window(name, layout, grab_anywhere=False)
+    event, values = window.read()
+    window.close()
+
+def results_frame(dic):
+
+    list_dataset = []
+    for dataset in dic.keys():
+        list_dataset.append(sg.Checkbox(dataset, size=(10, 1), key=dataset, default=False))
+    metrics = ['precision', 'recall', 'F1', 'auc_roc', 'accuracy']
+    list_metric = []
+    for metric in metrics:
+        list_metric.append(sg.Checkbox(metric, size=(10, 1), key=metric, default=False))
+
+    layout = [list_dataset,
+              list_metric,
+              [sg.Button('Table', size=(10, 1), enable_events=True, key='table', font='Helvetica 16'),
+               sg.Button('Bar Graphic', size=(10, 1), enable_events=True, key='graphic', font='Helvetica 16')]]
+
+    window = sg.Window('Select results', layout, size=(600, 150))
+
+    while True:
+        event, values = window.read()
+
+        if event in (sg.WIN_CLOSED, 'Exit'):
+            break
+        if event == 'table':
+            try:
+                for dataset in dic.keys():
+                    if values[dataset]:
+                        for metric in metrics:
+                            if values[metric]:
+                                df = return_df(dataset,metric)
+                                header_list = list(df.columns)
+                                data = df[0:].values.tolist()
+                                show_table(data, header_list, dataset + '-' + metric )
+            except:
+                pass
+        if event == 'graphic':
+            try:
+                for dataset in dic.keys():
+                    if values[dataset]:
+                        for metric in metrics:
+                            if values[metric]:
+                                df = return_df(dataset, metric)
+                                show_graphic(df, dataset + '-' + metric)
+            except:
+                pass
+
+def results(dic, path, item):
+
+    name = item.name.split('_')
+
+    tam = len(name)
+
+    dataset = name[0]
+
+    percent = name[tam - 2]
+
+    if name[1] == 'BoW':
+        if name[2] == 'term-frequency-IDF':
+            preprocessing = 'Bow-TFIDF'
+        elif name[2] == 'term-frequency':
+            preprocessing = 'Bow-TF'
+        elif name[2] == 'binary':
+            preprocessing = 'Bow-Binary'
+    elif name[1] == 'DensityInformation':
+        preprocessing = 'Density'
+    else:
+        preprocessing = name[1]
+
+    df = pd.read_csv(path + '/' + item.name, sep=';')
+
+    best_f1 = np.max(df['f1-score'])
+
+    best_pre = df[df['f1-score'] == best_f1]['precision'].iloc[0]
+
+    brest_rev = df[df['f1-score'] == best_f1]['recall'].iloc[0]
+
+    best_aucroc = np.max(df['auc_roc'])
+
+    best_accuracy = np.max(df['accuracy'])
+
+    if dataset not in dic:
+        dic[dataset] = {}
+        dic[dataset][preprocessing] = pd.DataFrame(
+            columns=['percent', 'precision', 'recall', 'F1', 'auc_roc', 'accuracy'])
+    elif preprocessing not in dic[dataset]:
+        dic[dataset][preprocessing] = pd.DataFrame(
+            columns=['percent', 'precision', 'recall', 'F1', 'auc_roc', 'accuracy'])
+
+    df_bests = dic[dataset][preprocessing]
+
+    df_bests = df_bests.append({'percent': percent.replace('.csv', '_%'),
+                                'precision': best_pre,
+                                'recall': brest_rev,
+                                'F1': best_f1,
+                                'auc_roc': best_aucroc,
+                                'accuracy': best_accuracy},
+                               ignore_index=True)
+
+    dic[dataset][preprocessing] = df_bests
+
+def return_df(dataset, metric):
+  df = pd.DataFrame(columns=['percent'] + list(dic[dataset].keys()))
+  df['percent'] = dic[dataset]['AE']['percent']
+
+  for prepro in dic[dataset].keys():
+    df[prepro] = dic[dataset][prepro][metric]
+
+  return df
+
+def read_results():
+    sg.set_options(auto_size_buttons=True)
+    layout = [[sg.Text('Results Directory', size=(16, 1)), sg.InputText(),
+               sg.FolderBrowse()],
+              [sg.Submit(), sg.Cancel(),
+               sg.Checkbox('Percents', size=(15,1), key='percent', default=False)]]
+
+    window1 = sg.Window('Input file', layout)
+    try:
+        event, values = window1.read()
+        window1.close()
+    except:
+        window1.close()
+        return
+
+    path = values['Browse']
+
+    if path == '':
+        return
+
+    basepath = Path(path)
+    files_in_basepath = basepath.iterdir()
+
+    if path is not None:
+        try:
+            dic = {}
+            for item in files_in_basepath:
+                if item.is_file():
+                    results(dic, path, item)
+
+            window1.close()
+            return dic
+        except:
+            sg.popup_error(
+                'Error reading file')
+            window1.close()
+            return
+
+def draw_figure(canvas, figure, loc=(0, 0)):
+    figure_canvas_agg = FigureCanvasTkAgg(figure, canvas)
+    figure_canvas_agg.draw()
+    figure_canvas_agg.get_tk_widget().pack(side='top', fill='both', expand=1)
+    return figure_canvas_agg
+
+def show_graphic(df, name):
+
+    N = len(list(df.keys())[1:])
+    ind = np.arange(N)  # the x locations for the groups
+    width = 0.2  # the width of the bars
+
+    fig = plt.figure(figsize=(15, 7))
+    ax = fig.add_subplot(111)
+
+    yvals = list(df[df['percent'] == '0.25'][list(df.keys())[1:]].iloc[0])
+
+    rects1 = ax.bar(ind, yvals, width, color=(0.1, 0.5, 0.5, 0.4))
+
+    zvals = list(df[df['percent'] == '0.5'][list(df.keys())[1:]].iloc[0])
+
+    rects2 = ax.bar(ind + width, zvals, width, color=(0.1, 0.5, 0.5, 0.6))
+
+    kvals = list(df[df['percent'] == '0.75'][list(df.keys())[1:]].iloc[0])
+
+    rects3 = ax.bar(ind + width * 2, kvals, width, color=(0.1, 0.5, 0.6, 0.8))
+
+    gvals = list(df[df['percent'] == '1'][list(df.keys())[1:]].iloc[0])
+
+    rects4 = ax.bar(ind + width * 3, gvals, width, color=(0.1, 0.5, 0.8, 1))
+
+    ax.set_ylabel('F1-Score')
+    ax.set_xlabel('Preprocessing Technique')
+    ax.set_xticks(ind + width)
+    ax.set_xticklabels(list(df.keys())[1:])
+    ax.legend((rects1[0], rects2[0], rects3[0], rects4[0]), ('0.25', '0.5', '0.75', '1.0'))
+
+    layout = [[sg.Canvas(size=(15, 7), key='-CANVAS-')]]
+
+    window = sg.Window(name, layout, layout, force_toplevel=True, finalize=True)
+
+    fig_photo = draw_figure(window['-CANVAS-'].TKCanvas, fig)
+
     event, values = window.read()
     window.close()
 
 
-def show_stats(df):
-    stats = df.describe().T
-    header_list = list(stats.columns)
-    data = stats.values.tolist()
-    for i, d in enumerate(data):
-        d.insert(0, list(stats.index)[i])
-    header_list = ['Feature'] + header_list
-    layout = [
-        [sg.Table(values=data,
-                  headings=header_list,
-                  font='Helvetica',
-                  pad=(10, 10),
-                  display_row_numbers=False,
-                  auto_size_columns=True,
-                  num_rows=min(25, len(data)))]
-    ]
-
-    window = sg.Window("Statistics", layout, grab_anywhere=False)
-    event, values = window.read()
-    window.close()
-
-
-def sklearn_model(output_var):
-    """
-    Builds and fits a ML model
-    """
-    from sklearn.ensemble import RandomForestClassifier
-    X = df.drop([output_var], axis=1)
-    y = df[output_var]
-
-    clf = RandomForestClassifier(n_estimators=20,
-                                 max_depth=4)
-    clf.fit(X, y)
-    # print("Prediction accuracy {}".format(clf.score(X,y)))
-    return clf, np.round(clf.score(X, y), 3)
-
-
-# =====================================================#
-# Define the window's contents i.e. layout
 layout = [
-    [sg.Button('Load data', size=(10, 1), enable_events=True, key='-READ-', font='Helvetica 16'),
-     sg.Checkbox('Has column names?', size=(15, 1), key='colnames-check', default=True),
-     sg.Checkbox('Drop NaN entries?', size=(15, 1), key='drop-nan', default=True)],
-    [sg.Button('Show data', size=(10, 1), enable_events=True, key='-SHOW-', font='Helvetica 16', ),
-     sg.Button('Show stats', size=(15, 1), enable_events=True, key='-STATS-', font='Helvetica 16', )],
-    [sg.Text("", size=(50, 1), key='-loaded-', pad=(5, 5), font='Helvetica 14'), ],
-    [sg.Text("Select output column", size=(18, 1), pad=(5, 5), font='Helvetica 12'), ],
-    [sg.Listbox(values=(''), key='colnames', size=(30, 3), enable_events=True), ],
-    [sg.Text("", size=(50, 1), key='-prediction-', pad=(5, 5), font='Helvetica 12')],
-    [sg.ProgressBar(50, orientation='h', size=(100, 20), key='progressbar')],
+    [sg.Button('Datasets', size=(15, 1), enable_events=True, key='Datasets', font='Helvetica 16'),
+     sg.Button('Preprocessing', size=(15, 1), enable_events=True, key='preprocessing', font='Helvetica 16'),
+     sg.Button('Classification', size=(15, 1), enable_events=True, key='classification', font='Helvetica 16'),
+     sg.Button('Results', size=(15, 1), enable_events=True, key='results', font='Helvetica 16')],
+     [sg.Graph(canvas_size=(800, 500), graph_bottom_left=(0, 0), graph_top_right=(500, 800), key="graph")]
 ]
 
-# Create the window
-window = sg.Window('Pima', layout, size=(600, 300))
-progress_bar = window['progressbar']
-prediction_text = window['-prediction-']
-colnames_checked = False
-dropnan_checked = False
+window = sg.Window('One-Class Text Categorization', layout, size=(900, 450))
 read_successful = False
+window.Finalize()
+graph = window.Element("graph")
+graph.DrawImage(filename="./images/Pipeline-quali.png", location=(50, 700))
+
+results_dic = False
 # Event loop
 while True:
     event, values = window.read()
-    loaded_text = window['-loaded-']
+
     if event in (sg.WIN_CLOSED, 'Exit'):
         break
-    if event == '-READ-':
-        if values['colnames-check'] == True:
-            colnames_checked = True
-        if values['drop-nan'] == True:
-            dropnan_checked = True
+    if event == 'Datasets':
         try:
-            df, data, header_list, fn = read_table()
-            read_successful = True
+            datasets = read_table()
         except:
             pass
-        if read_successful:
-            loaded_text.update("Datset loaded: '{}'".format(fn))
-            col_vals = [i for i in df.columns]
-            window.Element('colnames').Update(values=col_vals, )
-    if event == '-SHOW-':
-        if read_successful:
-            show_table(data, header_list, fn)
-        else:
-            loaded_text.update("No dataset was loaded")
-    if event == '-STATS-':
-        if read_successful:
-            show_stats(df)
-        else:
-            loaded_text.update("No dataset was loaded")
-    if event == 'colnames':
-        if len(values['colnames']) != 0:
-            output_var = values['colnames'][0]
-            if output_var != 'Class variable':
-                sg.Popup("Wrong output column selected!", title='Wrong', font="Helvetica 14")
-            else:
-                prediction_text.update("Fitting model...")
-                for i in range(50):
-                    event, values = window.read(timeout=10)
-                    progress_bar.UpdateBar(i + 1)
-                _, score = sklearn_model(output_var)
-                prediction_text.update("Accuracy of Random Forest model is: {}".format(score))
+    if event == 'preprocessing':
+        print('preprocessing here TO DO')
+    if event == 'classification':
+        print('classification here TO DO')
+    if event == 'results':
+        if not results_dic:
+            dic = read_results()
+        results_frame(dic)
